@@ -114,6 +114,10 @@ export class CodexStructuredSessionAdapter implements StructuredAgentSessionAdap
     }
     if (this.sessions.get(sessionId)?.connection === acquisition.connection) {
       event()
+    } else if (acquisition.isOverflowed) {
+      // Pre-publication overflow is an acquisition failure, not a dropped
+      // notification; tear down the child so callers retry explicitly.
+      void acquisition.connection?.close()
     }
   }
 
