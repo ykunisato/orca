@@ -2,10 +2,13 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  buildProcessTableIndex,
   createProcessTableSnapshotReader,
+  getProcessTableIndex,
   parseProcessTableRows,
   parseStrictProcessTableRows,
-  ProcessTableCaptureError
+  ProcessTableCaptureError,
+  type ProcessTableIndexStats
 } from './process-table-snapshot'
 
 function deferred<T>(): {
@@ -265,5 +268,49 @@ describe('parseStrictProcessTableRows', () => {
     expect(() => parseStrictProcessTableRows('PID PPID PGID TPGID STAT COMMAND')).toThrow(
       ProcessTableCaptureError
     )
+  })
+})
+
+describe('getProcessTableIndex', () => {
+  it('reuses one index for the same snapshot identity', () => {
+    const rows = parseProcessTableRows(
+      ['100 1 Ss bash', '101 100 S node codex', '102 100 S vim'].join('\n')
+    )
+
+    const first = getProcessTableIndex(rows)
+    const second = getProcessTableIndex(rows)
+
+    expect(second).toBe(first)
+    expect(first.byPid.get(100)).toBe(rows[0])
+    expect(first.childrenByPpid.get(100)).toEqual([rows[1], rows[2]])
+  })
+
+  it('does not reuse an index across distinct snapshot arrays', () => {
+    const firstRows = parseProcessTableRows('100 1 Ss bash')
+    const secondRows = parseProcessTableRows('100 1 Ss bash')
+
+    expect(getProcessTableIndex(secondRows)).not.toBe(getProcessTableIndex(firstRows))
+  })
+
+  it('resolves a duplicated pid to the LAST row, matching the evidence resolver', () => {
+    // Why: the memo replaces a first-wins `rows.find()`, so pin the deliberate
+    // tie-break — one rule for every index consumer on a malformed capture.
+    const rows = parseProcessTableRows(['100 1 Ss bash', '100 1 Ss+ zsh'].join('\n'))
+
+    expect(getProcessTableIndex(rows).byPid.get(100)).toBe(rows[1])
+  })
+
+  it('keeps the memo out of measured builds so a cache hit cannot satisfy a perf gate', () => {
+    const rows = parseProcessTableRows('100 1 Ss bash')
+    const stats: ProcessTableIndexStats = { indexBuilds: 0, rowVisits: 0, indexLookups: 0 }
+
+    const memoized = getProcessTableIndex(rows)
+    const measured = buildProcessTableIndex(rows, stats)
+
+    expect(memoized.stats).toBeUndefined()
+    expect(measured).not.toBe(memoized)
+    expect(stats).toEqual({ indexBuilds: 1, rowVisits: 1, indexLookups: 0 })
+    // The measured build must not evict or replace the shared memo.
+    expect(getProcessTableIndex(rows)).toBe(memoized)
   })
 })

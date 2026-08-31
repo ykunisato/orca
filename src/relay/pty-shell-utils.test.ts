@@ -457,6 +457,24 @@ describe('getForegroundProcessName', () => {
     })
   })
 
+  it('resolves a duplicated root pid to the LAST capture row', async () => {
+    // Why: the shared index is last-wins, replacing a first-wins `rows.find()`.
+    // One tie-break for every consumer of a malformed capture; here the later
+    // row owns the terminal foreground, so no background child can claim it.
+    await withProcessPlatform('linux', async () => {
+      mockExecFile((_command, args) => {
+        if (args[0] === '-axo') {
+          return {
+            stdout: ['100 1 Ss bash', '100 1 Ss+ bash', '101 100 S node /opt/codex'].join('\n')
+          }
+        }
+        return new Error('unexpected command')
+      })
+
+      await expect(getForegroundProcessName(100, 'bash')).resolves.toBe('bash')
+    })
+  })
+
   it('falls back to the root process command when descendant inspection fails', async () => {
     mockExecFile((_command, args) => {
       if (args[0] === '-axo') {
