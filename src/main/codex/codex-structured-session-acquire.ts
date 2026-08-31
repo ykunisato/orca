@@ -136,14 +136,17 @@ export async function acquireCodexStructuredSession(
           ),
         onExit: (error) => {
           acquisition.prompts.clear()
-          handleCodexSessionExit({
-            sessions,
-            sessionId,
-            connection: acquisition.connection,
-            error,
-            ...(deps.onEvent ? { onEvent: deps.onEvent } : {})
-          })
-          context.clearNotificationRetries(sessionId, acquisition.connection)
+          try {
+            handleCodexSessionExit({
+              sessions,
+              sessionId,
+              connection: acquisition.connection,
+              error,
+              ...(deps.onEvent ? { onEvent: deps.onEvent } : {})
+            })
+          } finally {
+            context.clearNotificationRetries(sessionId, acquisition.connection)
+          }
         }
       }
     )
