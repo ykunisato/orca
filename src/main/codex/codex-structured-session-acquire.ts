@@ -2,7 +2,10 @@ import type {
   AgentSessionAcquisition,
   StructuredAgentSessionAcquireInput
 } from '../native-chat/agent-session-wire/structured-agent-session-adapter'
-import { AgentSessionPreSpawnError } from '../native-chat/agent-session-wire/structured-agent-session-adapter'
+import {
+  AgentSessionAcquisitionRefusal,
+  AgentSessionPreSpawnError
+} from '../native-chat/agent-session-wire/structured-agent-session-adapter'
 import {
   closeFailedCodexAcquisition,
   stopSupersededCodexAcquisition
@@ -52,6 +55,10 @@ export type CodexSessionAcquireContext = {
     sessionId: string,
     connection: CodexAcquisitionAttempt['window']['connection']
   ) => void
+  retryNotifications: (
+    sessionId: string,
+    connection: CodexAcquisitionAttempt['window']['connection']
+  ) => void
   forceCloseUnexpected: (
     sessionId: string,
     fence: number,
@@ -68,6 +75,7 @@ export async function acquireCodexStructuredSession(
   const sessionId = input.identity.sessionId
   const { previousAttempt, attempt } = acquisitions.start(sessionId)
   const acquisition = attempt.window
+  let unbindReadingControl: (() => void) | undefined
   let primaryThreadId =
     input.identity.providerHandle.kind === 'codex' ? input.identity.providerHandle.threadId : null
   const translator = input.events
@@ -113,12 +121,18 @@ export async function acquireCodexStructuredSession(
             Buffer.byteLength(JSON.stringify(params ?? null), 'utf8')
           ),
         onServerRequest: (request) =>
-          context.deliver(acquisition, sessionId, () =>
-            context.handleServerRequest(sessionId, request)
+          context.deliver(
+            acquisition,
+            sessionId,
+            () => context.handleServerRequest(sessionId, request),
+            Buffer.byteLength(JSON.stringify(request), 'utf8')
           ),
         onUnhandledFrame: (kind, payload) =>
-          context.deliver(acquisition, sessionId, () =>
-            context.handleUnhandledFrame(sessionId, kind, payload)
+          context.deliver(
+            acquisition,
+            sessionId,
+            () => context.handleUnhandledFrame(sessionId, kind, payload),
+            Buffer.byteLength(JSON.stringify({ kind, payload }), 'utf8')
           ),
         onExit: (error) => {
           acquisition.prompts.clear()
@@ -134,11 +148,25 @@ export async function acquireCodexStructuredSession(
       }
     )
     acquisition.connection = connection
+    if (connection.pauseReading && connection.resumeReading) {
+      unbindReadingControl = input.events?.bindReadingControl?.({
+        pauseReading: connection.pauseReading,
+        resumeReading: () => {
+          connection.resumeReading?.()
+          context.retryNotifications(sessionId, connection)
+        }
+      })
+    }
     acquisitions.assertCurrent(sessionId, attempt)
     const opened = await openCodexThread(connection, launch, deps.requestTimeoutMs)
     acquisitions.assertCurrent(sessionId, attempt)
     primaryThreadId = opened.threadId
-    translator?.restoreThread(opened.threadId, opened.thread ?? {})
+    const restoreAdmission = translator?.restoreThread(opened.threadId, opened.thread ?? {})
+    if (restoreAdmission && !restoreAdmission.accepted) {
+      throw new AgentSessionAcquisitionRefusal(
+        'Codex thread history exceeds the bounded restore queue; history was not partially imported.'
+      )
+    }
     const process = await codexProcessIdentity(
       { ...input, pid: connection.pid },
       deps.readProcessStartTime
@@ -169,6 +197,7 @@ export async function acquireCodexStructuredSession(
       reportedOptions: reportedCodexThreadOptions(opened),
       turnIdWaiters: [],
       translator,
+      ...(unbindReadingControl ? { unbindReadingControl } : {}),
       forceCloseUnexpected: (reason) =>
         context.forceCloseUnexpected(sessionId, input.fence, acquisitionGeneration, reason)
     }
@@ -197,7 +226,10 @@ export async function acquireCodexStructuredSession(
         registry: acquisitions,
         attempt,
         cause: error,
-        dispose: () => translator?.dispose()
+        dispose: () => {
+          unbindReadingControl?.()
+          translator?.dispose()
+        }
       })
     }
     acquisitions.deleteIfCurrent(sessionId, attempt)

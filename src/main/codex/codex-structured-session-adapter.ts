@@ -91,6 +91,11 @@ export class CodexStructuredSessionAdapter implements StructuredAgentSessionAdap
           this.handleUnhandledFrame(sessionId, kind, params),
         clearNotificationRetries: (sessionId, connection) =>
           this.notificationRetries.clear(sessionId, connection),
+        retryNotifications: (sessionId, connection) => {
+          if (connection) {
+            this.notificationRetries.retry(sessionId, connection)
+          }
+        },
         forceCloseUnexpected: (sessionId, fence, generation, reason) =>
           this.forceCloseUnexpected(sessionId, fence, generation, reason)
       },
