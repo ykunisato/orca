@@ -134,7 +134,12 @@ export type ProcessTableIndex = {
   stats?: ProcessTableIndexStats
 }
 
-/** Build all correlation indexes in one linear pass over a capture. */
+/**
+ * Build the correlation indexes in one linear pass over a capture. Only the
+ * indexes a resolver actually reads are materialized: group indexes would cost
+ * two more maps plus a per-row array allocation on every capture, and foreground
+ * membership is derived from each row's own `pgid` against the root's `tpgid`.
+ */
 export function buildProcessTableIndex(
   rows: readonly ProcessTableRow[],
   stats?: ProcessTableIndexStats
