@@ -131,8 +131,6 @@ export type ProcessTableIndex = {
   rows: readonly ProcessTableRow[]
   byPid: ReadonlyMap<number, ProcessTableRow>
   childrenByPpid: ReadonlyMap<number, readonly ProcessTableRow[]>
-  byPgid: ReadonlyMap<number, readonly ProcessTableRow[]>
-  byTpgid: ReadonlyMap<number, readonly ProcessTableRow[]>
   stats?: ProcessTableIndexStats
 }
 
@@ -146,28 +144,30 @@ export function buildProcessTableIndex(
   }
   const byPid = new Map<number, ProcessTableRow>()
   const childrenByPpid = new Map<number, ProcessTableRow[]>()
-  const byPgid = new Map<number, ProcessTableRow[]>()
-  const byTpgid = new Map<number, ProcessTableRow[]>()
   for (const row of rows) {
     if (stats) {
       stats.rowVisits += 1
     }
-    byPid.set(row.pid, row)
+    // Preserve rows.find() semantics if a malformed table repeats a pid
+    if (!byPid.has(row.pid)) {
+      byPid.set(row.pid, row)
+    }
     const children = childrenByPpid.get(row.ppid) ?? []
     children.push(row)
     childrenByPpid.set(row.ppid, children)
-    if (row.pgid !== undefined) {
-      const group = byPgid.get(row.pgid) ?? []
-      group.push(row)
-      byPgid.set(row.pgid, group)
-    }
-    if (row.tpgid !== undefined) {
-      const foreground = byTpgid.get(row.tpgid) ?? []
-      foreground.push(row)
-      byTpgid.set(row.tpgid, foreground)
-    }
   }
-  return { rows, byPid, childrenByPpid, byPgid, byTpgid, stats }
+  return { rows, byPid, childrenByPpid, stats }
+}
+
+export function lookupProcessTableIndex<T>(
+  index: ProcessTableIndex,
+  lookup: (index: ProcessTableIndex) => T,
+  stats = index.stats
+): T {
+  if (stats) {
+    stats.indexLookups += 1
+  }
+  return lookup(index)
 }
 
 const processTableIndexes = new WeakMap<readonly ProcessTableRow[], ProcessTableIndex>()
@@ -175,7 +175,9 @@ const processTableIndexes = new WeakMap<readonly ProcessTableRow[], ProcessTable
 /**
  * Memoize one index per snapshot identity, so the panes that share a TTL-cached
  * capture walk its rows once instead of once each. Keyed weakly by the rows
- * array, so an index dies with the snapshot that produced it.
+ * array, so an index dies with the snapshot that produced it. The shared build
+ * materializes only `byPid` and `childrenByPpid`, so a one-pane relay pays for
+ * two maps per capture rather than four indexes no resolver queries.
  *
  * Deliberately stats-free: `buildProcessTableIndex` mutates the caller's counter
  * bag and stores it on the index, so a shared index would hand one caller's bag
@@ -191,17 +193,6 @@ export function getProcessTableIndex(rows: readonly ProcessTableRow[]): ProcessT
   const index = buildProcessTableIndex(rows)
   processTableIndexes.set(rows, index)
   return index
-}
-
-export function lookupProcessTableIndex<T>(
-  index: ProcessTableIndex,
-  lookup: (index: ProcessTableIndex) => T,
-  stats = index.stats
-): T {
-  if (stats) {
-    stats.indexLookups += 1
-  }
-  return lookup(index)
 }
 
 type Snapshot<T> = { value: T; capturedAtMs: number }

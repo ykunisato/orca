@@ -292,12 +292,22 @@ describe('getProcessTableIndex', () => {
     expect(getProcessTableIndex(secondRows)).not.toBe(getProcessTableIndex(firstRows))
   })
 
-  it('resolves a duplicated pid to the LAST row, matching the evidence resolver', () => {
-    // Why: the memo replaces a first-wins `rows.find()`, so pin the deliberate
-    // tie-break — one rule for every index consumer on a malformed capture.
+  it('resolves a duplicated pid to the FIRST row, as `rows.find()` did', () => {
+    // Preserve rows.find() semantics if a malformed table repeats a pid: an argv
+    // newline makes `ps` print a continuation line that can parse as a spurious
+    // row, and that row always follows the real one it was split from.
     const rows = parseProcessTableRows(['100 1 Ss bash', '100 1 Ss+ zsh'].join('\n'))
 
-    expect(getProcessTableIndex(rows).byPid.get(100)).toBe(rows[1])
+    expect(getProcessTableIndex(rows).byPid.get(100)).toBe(rows[0])
+    expect(buildProcessTableIndex(rows).byPid.get(100)).toBe(rows[0])
+  })
+
+  it('materializes only the maps the descendant walk reads', () => {
+    // Why: this memo exists to cut relay CPU; four indexes for two readers would
+    // make a single-pane relay pay more per capture than the code it replaced.
+    const index = getProcessTableIndex(parseProcessTableRows('100 1 Ss bash'))
+
+    expect(Object.keys(index).sort()).toEqual(['byPid', 'childrenByPpid', 'rows', 'stats'])
   })
 
   it('keeps the memo out of measured builds so a cache hit cannot satisfy a perf gate', () => {
